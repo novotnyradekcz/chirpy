@@ -28,22 +28,26 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func main() {
-	apiCfg := &apiConfig{}
+func (cfg *apiConfig) routes(files http.FileSystem) http.Handler {
 	mux := http.NewServeMux()
-	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
-	}
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
-	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
-	mux.HandleFunc("GET /metrics", apiCfg.handlerMetrics)
-	mux.HandleFunc("POST /reset", apiCfg.handlerReset)
+	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(files))))
+	mux.HandleFunc("GET /metrics", cfg.handlerMetrics)
+	mux.HandleFunc("POST /reset", cfg.handlerReset)
+	return mux
+}
+
+func main() {
+	apiCfg := &apiConfig{}
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: apiCfg.routes(http.Dir(".")),
+	}
 
 	log.Fatal(server.ListenAndServe())
 }
