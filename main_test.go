@@ -57,7 +57,9 @@ func TestRoutesRejectUnprefixedAPIPaths(t *testing.T) {
 	}{
 		{method: http.MethodGet, path: "/healthz"},
 		{method: http.MethodGet, path: "/metrics"},
+		{method: http.MethodGet, path: "/api/metrics"},
 		{method: http.MethodPost, path: "/reset"},
+		{method: http.MethodPost, path: "/api/reset"},
 	} {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -74,12 +76,12 @@ func TestRoutesRejectUnprefixedAPIPaths(t *testing.T) {
 
 func TestRoutesRejectUnsupportedMethods(t *testing.T) {
 	files := testStaticFiles(t)
-	for _, path := range []string{"/api/reset", "/api/metrics", "/api/healthz"} {
+	for _, path := range []string{"/admin/reset", "/admin/metrics", "/api/healthz"} {
 		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
-			if path == "/api/reset" && method == http.MethodPost {
+			if path == "/admin/reset" && method == http.MethodPost {
 				continue
 			}
-			if path != "/api/reset" && (method == http.MethodGet || method == http.MethodHead) {
+			if path != "/admin/reset" && (method == http.MethodGet || method == http.MethodHead) {
 				continue
 			}
 			t.Run(method+" "+path, func(t *testing.T) {
@@ -114,16 +116,16 @@ func TestFileServerMissingFileCountsHit(t *testing.T) {
 func TestInitialMetrics(t *testing.T) {
 	cfg := &apiConfig{}
 	response := httptest.NewRecorder()
-	cfg.routes(testStaticFiles(t)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/metrics", nil))
+	cfg.routes(testStaticFiles(t)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/metrics", nil))
 
 	if response.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if body := response.Body.String(); body != "Hits: 0" {
-		t.Errorf("body = %q, want Hits: 0", body)
+	if body := response.Body.String(); body != "<html>\n  <body>\n    <h1>Welcome, Chirpy Admin</h1>\n    <p>Chirpy has been visited 0 times!</p>\n  </body>\n</html>" {
+		t.Errorf("unexpected metrics HTML: %q", body)
 	}
-	if got := response.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
-		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	if got := response.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
 	}
 	if hits := cfg.fileserverHits.Load(); hits != 0 {
 		t.Errorf("hits = %d, want 0", hits)
@@ -135,7 +137,7 @@ func TestResetAlreadyZero(t *testing.T) {
 	mux := cfg.routes(testStaticFiles(t))
 	for i := 0; i < 3; i++ {
 		response := httptest.NewRecorder()
-		mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/reset", nil))
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/admin/reset", nil))
 		if response.Code != http.StatusOK {
 			t.Errorf("reset %d status = %d, want %d", i, response.Code, http.StatusOK)
 		}
@@ -214,16 +216,16 @@ func TestFileServerMetricsAfterReset(t *testing.T) {
 		hits   int32
 	}{
 		{path: "/app/", status: http.StatusOK, hits: 1},
-		{path: "/api/reset", status: http.StatusOK, hits: 0},
-		{path: "/api/metrics", status: http.StatusOK, hits: 0},
+		{path: "/admin/reset", status: http.StatusOK, hits: 0},
+		{path: "/admin/metrics", status: http.StatusOK, hits: 0},
 		{path: "/app", status: http.StatusTemporaryRedirect, hits: 0},
 		{path: "/app/", status: http.StatusOK, hits: 1},
 		{path: "/app/assets/logo.png", status: http.StatusOK, hits: 2},
-		{path: "/api/metrics", status: http.StatusOK, hits: 2},
+		{path: "/admin/metrics", status: http.StatusOK, hits: 2},
 	} {
 		response := httptest.NewRecorder()
 		method := http.MethodGet
-		if step.path == "/api/reset" {
+		if step.path == "/admin/reset" {
 			method = http.MethodPost
 		}
 		mux.ServeHTTP(response, httptest.NewRequest(method, step.path, nil))
@@ -233,8 +235,8 @@ func TestFileServerMetricsAfterReset(t *testing.T) {
 		if hits := cfg.fileserverHits.Load(); hits != step.hits {
 			t.Fatalf("after %s hits = %d, want %d", step.path, hits, step.hits)
 		}
-		if step.path == "/api/metrics" && step.hits == 2 && response.Body.String() != "Hits: 2" {
-			t.Errorf("metrics body = %q, want Hits: 2", response.Body.String())
+		if step.path == "/admin/metrics" && step.hits == 2 && response.Body.String() != "<html>\n  <body>\n    <h1>Welcome, Chirpy Admin</h1>\n    <p>Chirpy has been visited 2 times!</p>\n  </body>\n</html>" {
+			t.Errorf("unexpected metrics HTML: %q", response.Body.String())
 		}
 	}
 }
@@ -248,14 +250,14 @@ func TestMetricsAndReset(t *testing.T) {
 		path string
 		body string
 	}{
-		{path: "/api/metrics", body: "Hits: 5"},
-		{path: "/api/metrics", body: "Hits: 5"},
-		{path: "/api/reset", body: ""},
-		{path: "/api/metrics", body: "Hits: 0"},
+		{path: "/admin/metrics", body: "<html>\n  <body>\n    <h1>Welcome, Chirpy Admin</h1>\n    <p>Chirpy has been visited 5 times!</p>\n  </body>\n</html>"},
+		{path: "/admin/metrics", body: "<html>\n  <body>\n    <h1>Welcome, Chirpy Admin</h1>\n    <p>Chirpy has been visited 5 times!</p>\n  </body>\n</html>"},
+		{path: "/admin/reset", body: ""},
+		{path: "/admin/metrics", body: "<html>\n  <body>\n    <h1>Welcome, Chirpy Admin</h1>\n    <p>Chirpy has been visited 0 times!</p>\n  </body>\n</html>"},
 	} {
 		response := httptest.NewRecorder()
 		method := http.MethodGet
-		if step.path == "/api/reset" {
+		if step.path == "/admin/reset" {
 			method = http.MethodPost
 		}
 		mux.ServeHTTP(response, httptest.NewRequest(method, step.path, nil))
@@ -265,9 +267,9 @@ func TestMetricsAndReset(t *testing.T) {
 		if body := response.Body.String(); body != step.body {
 			t.Errorf("%s body = %q, want %q", step.path, body, step.body)
 		}
-		if step.path == "/api/metrics" {
-			if contentType := response.Header().Get("Content-Type"); contentType != "text/plain; charset=utf-8" {
-				t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", contentType)
+		if step.path == "/admin/metrics" {
+			if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want text/html; charset=utf-8", contentType)
 			}
 		}
 	}
