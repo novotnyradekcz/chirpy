@@ -30,7 +30,7 @@ func TestHealthz(t *testing.T) {
 	cfg := &apiConfig{}
 	cfg.fileserverHits.Store(5)
 	response := httptest.NewRecorder()
-	cfg.routes(testStaticFiles(t)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	cfg.routes(testStaticFiles(t)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/healthz", nil))
 
 	if response.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", response.Code, http.StatusOK)
@@ -46,14 +46,40 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestRoutesRejectUnprefixedAPIPaths(t *testing.T) {
+	cfg := &apiConfig{}
+	cfg.fileserverHits.Store(5)
+	mux := cfg.routes(testStaticFiles(t))
+
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/healthz"},
+		{method: http.MethodGet, path: "/metrics"},
+		{method: http.MethodPost, path: "/reset"},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+			if response.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want %d", response.Code, http.StatusNotFound)
+			}
+			if hits := cfg.fileserverHits.Load(); hits != 5 {
+				t.Errorf("hits = %d, want 5", hits)
+			}
+		})
+	}
+}
+
 func TestRoutesRejectUnsupportedMethods(t *testing.T) {
 	files := testStaticFiles(t)
-	for _, path := range []string{"/reset", "/metrics", "/healthz"} {
+	for _, path := range []string{"/api/reset", "/api/metrics", "/api/healthz"} {
 		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
-			if path == "/reset" && method == http.MethodPost {
+			if path == "/api/reset" && method == http.MethodPost {
 				continue
 			}
-			if path != "/reset" && (method == http.MethodGet || method == http.MethodHead) {
+			if path != "/api/reset" && (method == http.MethodGet || method == http.MethodHead) {
 				continue
 			}
 			t.Run(method+" "+path, func(t *testing.T) {
@@ -88,7 +114,7 @@ func TestFileServerMissingFileCountsHit(t *testing.T) {
 func TestInitialMetrics(t *testing.T) {
 	cfg := &apiConfig{}
 	response := httptest.NewRecorder()
-	cfg.routes(testStaticFiles(t)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	cfg.routes(testStaticFiles(t)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/metrics", nil))
 
 	if response.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", response.Code, http.StatusOK)
@@ -109,7 +135,7 @@ func TestResetAlreadyZero(t *testing.T) {
 	mux := cfg.routes(testStaticFiles(t))
 	for i := 0; i < 3; i++ {
 		response := httptest.NewRecorder()
-		mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/reset", nil))
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/reset", nil))
 		if response.Code != http.StatusOK {
 			t.Errorf("reset %d status = %d, want %d", i, response.Code, http.StatusOK)
 		}
@@ -188,16 +214,16 @@ func TestFileServerMetricsAfterReset(t *testing.T) {
 		hits   int32
 	}{
 		{path: "/app/", status: http.StatusOK, hits: 1},
-		{path: "/reset", status: http.StatusOK, hits: 0},
-		{path: "/metrics", status: http.StatusOK, hits: 0},
+		{path: "/api/reset", status: http.StatusOK, hits: 0},
+		{path: "/api/metrics", status: http.StatusOK, hits: 0},
 		{path: "/app", status: http.StatusTemporaryRedirect, hits: 0},
 		{path: "/app/", status: http.StatusOK, hits: 1},
 		{path: "/app/assets/logo.png", status: http.StatusOK, hits: 2},
-		{path: "/metrics", status: http.StatusOK, hits: 2},
+		{path: "/api/metrics", status: http.StatusOK, hits: 2},
 	} {
 		response := httptest.NewRecorder()
 		method := http.MethodGet
-		if step.path == "/reset" {
+		if step.path == "/api/reset" {
 			method = http.MethodPost
 		}
 		mux.ServeHTTP(response, httptest.NewRequest(method, step.path, nil))
@@ -207,7 +233,7 @@ func TestFileServerMetricsAfterReset(t *testing.T) {
 		if hits := cfg.fileserverHits.Load(); hits != step.hits {
 			t.Fatalf("after %s hits = %d, want %d", step.path, hits, step.hits)
 		}
-		if step.path == "/metrics" && step.hits == 2 && response.Body.String() != "Hits: 2" {
+		if step.path == "/api/metrics" && step.hits == 2 && response.Body.String() != "Hits: 2" {
 			t.Errorf("metrics body = %q, want Hits: 2", response.Body.String())
 		}
 	}
@@ -222,14 +248,14 @@ func TestMetricsAndReset(t *testing.T) {
 		path string
 		body string
 	}{
-		{path: "/metrics", body: "Hits: 5"},
-		{path: "/metrics", body: "Hits: 5"},
-		{path: "/reset", body: ""},
-		{path: "/metrics", body: "Hits: 0"},
+		{path: "/api/metrics", body: "Hits: 5"},
+		{path: "/api/metrics", body: "Hits: 5"},
+		{path: "/api/reset", body: ""},
+		{path: "/api/metrics", body: "Hits: 0"},
 	} {
 		response := httptest.NewRecorder()
 		method := http.MethodGet
-		if step.path == "/reset" {
+		if step.path == "/api/reset" {
 			method = http.MethodPost
 		}
 		mux.ServeHTTP(response, httptest.NewRequest(method, step.path, nil))
@@ -239,7 +265,7 @@ func TestMetricsAndReset(t *testing.T) {
 		if body := response.Body.String(); body != step.body {
 			t.Errorf("%s body = %q, want %q", step.path, body, step.body)
 		}
-		if step.path == "/metrics" {
+		if step.path == "/api/metrics" {
 			if contentType := response.Header().Get("Content-Type"); contentType != "text/plain; charset=utf-8" {
 				t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", contentType)
 			}
