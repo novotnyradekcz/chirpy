@@ -108,6 +108,90 @@ func TestHandlerChirpsCreate(t *testing.T) {
 	}
 }
 
+func TestHandlerGetChirps(t *testing.T) {
+	chirps := []database.Chirp{
+		{
+			ID:        uuid.MustParse("924b38f4-ec39-43d1-884d-7900813888ee"),
+			CreatedAt: time.Date(2026, time.January, 2, 3, 4, 5, 123456000, time.UTC),
+			UpdatedAt: time.Date(2026, time.January, 2, 3, 5, 5, 123456000, time.UTC),
+			Body:      "first chirp",
+			UserID:    uuid.MustParse("d6b2797e-b0ee-45e6-985f-1c9a57aba969"),
+		},
+		{
+			ID:        uuid.MustParse("e4b1e4df-03f1-4739-a408-ebd135122d23"),
+			CreatedAt: time.Date(2026, time.January, 3, 3, 4, 5, 123456000, time.UTC),
+			UpdatedAt: time.Date(2026, time.January, 3, 3, 5, 5, 123456000, time.UTC),
+			Body:      "second chirp",
+			UserID:    uuid.MustParse("d6b2797e-b0ee-45e6-985f-1c9a57aba969"),
+		},
+	}
+
+	tests := []struct {
+		name string
+		rows [][]driver.Value
+		want []Chirp
+	}{
+		{
+			name: "returns chirps in query order",
+			rows: [][]driver.Value{
+				{chirps[0].ID.String(), chirps[0].CreatedAt, chirps[0].UpdatedAt, chirps[0].Body, chirps[0].UserID.String()},
+				{chirps[1].ID.String(), chirps[1].CreatedAt, chirps[1].UpdatedAt, chirps[1].Body, chirps[1].UserID.String()},
+			},
+			want: []Chirp{
+				{ID: chirps[0].ID, CreatedAt: chirps[0].CreatedAt, UpdatedAt: chirps[0].UpdatedAt, Body: chirps[0].Body, UserID: chirps[0].UserID},
+				{ID: chirps[1].ID, CreatedAt: chirps[1].CreatedAt, UpdatedAt: chirps[1].UpdatedAt, Body: chirps[1].Body, UserID: chirps[1].UserID},
+			},
+		},
+		{
+			name: "empty result is an empty array",
+			rows: [][]driver.Value{},
+			want: []Chirp{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/chirps", nil)
+			type contextKey struct{}
+			req = req.WithContext(context.WithValue(req.Context(), contextKey{}, "request context"))
+			calls := 0
+			cfg := apiConfig{dbQueries: newChirpTestQueries(t, func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+				calls++
+				if ctx != req.Context() {
+					t.Error("database query did not receive the request context")
+				}
+				if normalized := strings.Join(strings.Fields(strings.ToLower(query)), " "); !strings.Contains(normalized, "order by created_at asc") {
+					t.Errorf("query does not order chirps by created_at ascending: %q", query)
+				}
+				if len(args) != 0 {
+					t.Errorf("query arguments = %v, want none", args)
+				}
+				return &chirpTestRows{rows: tt.rows}, nil
+			})}
+			rec := httptest.NewRecorder()
+
+			cfg.handlerGetChirps(rec, req)
+
+			if calls != 1 {
+				t.Errorf("database query calls = %d, want 1", calls)
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; response = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+			var got []Chirp
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v; response = %s", err, rec.Body.String())
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("response = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandlerChirpsRejectsInvalidInputWithoutDatabase(t *testing.T) {
 	userID := uuid.MustParse("d6b2797e-b0ee-45e6-985f-1c9a57aba969")
 	tests := []struct {
@@ -277,6 +361,8 @@ func (c *chirpTestConn) QueryContext(ctx context.Context, query string, args []d
 
 type chirpTestRows struct {
 	values []driver.Value
+	rows   [][]driver.Value
+	index  int
 }
 
 func (*chirpTestRows) Columns() []string {
@@ -286,6 +372,14 @@ func (*chirpTestRows) Columns() []string {
 func (*chirpTestRows) Close() error { return nil }
 
 func (r *chirpTestRows) Next(dest []driver.Value) error {
+	if r.rows != nil {
+		if r.index >= len(r.rows) {
+			return io.EOF
+		}
+		copy(dest, r.rows[r.index])
+		r.index++
+		return nil
+	}
 	if r.values == nil {
 		return io.EOF
 	}
