@@ -192,6 +192,94 @@ func TestHandlerGetChirps(t *testing.T) {
 	}
 }
 
+func TestHandlerGetChirp(t *testing.T) {
+	chirpID := uuid.MustParse("924b38f4-ec39-43d1-884d-7900813888ee")
+	userID := uuid.MustParse("d6b2797e-b0ee-45e6-985f-1c9a57aba969")
+	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 123456000, time.UTC)
+	updatedAt := createdAt.Add(time.Minute)
+
+	tests := []struct {
+		name       string
+		values     []driver.Value
+		wantStatus int
+		wantBody   map[string]any
+	}{
+		{
+			name:       "found",
+			values:     []driver.Value{chirpID.String(), createdAt, updatedAt, "a chirp", userID.String()},
+			wantStatus: http.StatusOK,
+			wantBody: map[string]any{
+				"id":         chirpID.String(),
+				"created_at": createdAt.Format(time.RFC3339Nano),
+				"updated_at": updatedAt.Format(time.RFC3339Nano),
+				"body":       "a chirp",
+				"user_id":    userID.String(),
+			},
+		},
+		{
+			name:       "not found",
+			wantStatus: http.StatusNotFound,
+			wantBody:   map[string]any{"error": "Chirp not found"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/chirps/"+chirpID.String(), nil)
+			req.SetPathValue("chirpID", chirpID.String())
+			type contextKey struct{}
+			req = req.WithContext(context.WithValue(req.Context(), contextKey{}, "request context"))
+			calls := 0
+			cfg := apiConfig{dbQueries: newChirpTestQueries(t, func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+				calls++
+				if ctx != req.Context() {
+					t.Error("database query did not receive the request context")
+				}
+				assertChirpTestSelectByID(t, query, args, chirpID)
+				return &chirpTestRows{values: tt.values}, nil
+			})}
+			rec := httptest.NewRecorder()
+
+			cfg.handlerGetChirp(rec, req)
+
+			if calls != 1 {
+				t.Errorf("database query calls = %d, want 1", calls)
+			}
+			assertChirpTestJSON(t, rec, tt.wantStatus, tt.wantBody)
+		})
+	}
+}
+
+func TestHandlerGetChirpInvalidID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/chirps/not-a-uuid", nil)
+	req.SetPathValue("chirpID", "not-a-uuid")
+	rec := httptest.NewRecorder()
+
+	(&apiConfig{}).handlerGetChirp(rec, req)
+
+	assertChirpTestJSON(t, rec, http.StatusNotFound, map[string]any{"error": "Chirp not found"})
+}
+
+func TestHandlerGetChirpDatabaseError(t *testing.T) {
+	chirpID := uuid.MustParse("924b38f4-ec39-43d1-884d-7900813888ee")
+	calls := 0
+	cfg := apiConfig{dbQueries: newChirpTestQueries(t, func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+		calls++
+		assertChirpTestSelectByID(t, query, args, chirpID)
+		return nil, errors.New("database unavailable: private connection details")
+	})}
+	req := httptest.NewRequest(http.MethodGet, "/api/chirps/"+chirpID.String(), nil)
+	req.SetPathValue("chirpID", chirpID.String())
+	rec := httptest.NewRecorder()
+
+	cfg.handlerGetChirp(rec, req)
+
+	if calls != 1 {
+		t.Errorf("database query calls = %d, want 1", calls)
+	}
+	assertChirpTestJSON(t, rec, http.StatusInternalServerError, map[string]any{"error": "Could not retrieve chirp"})
+}
+
 func TestHandlerChirpsRejectsInvalidInputWithoutDatabase(t *testing.T) {
 	userID := uuid.MustParse("d6b2797e-b0ee-45e6-985f-1c9a57aba969")
 	tests := []struct {
@@ -295,6 +383,19 @@ func assertChirpTestJSON(t *testing.T, rec *httptest.ResponseRecorder, status in
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("response = %#v, want %#v", got, want)
+	}
+}
+
+func assertChirpTestSelectByID(t *testing.T, query string, args []driver.NamedValue, chirpID uuid.UUID) {
+	t.Helper()
+	if normalized := strings.Join(strings.Fields(strings.ToLower(query)), " "); !strings.Contains(normalized, "from chirps where id = $1") {
+		t.Errorf("expected a chirp lookup by ID, got query %q", query)
+	}
+	if len(args) != 1 {
+		t.Fatalf("query arguments = %v, want chirp ID", args)
+	}
+	if args[0].Ordinal != 1 || args[0].Value != chirpID.String() {
+		t.Errorf("query argument = %+v, want chirp ID %q", args[0], chirpID)
 	}
 }
 
