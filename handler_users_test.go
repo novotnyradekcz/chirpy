@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/novotnyradekcz/chirpy/internal/auth"
 	"github.com/novotnyradekcz/chirpy/internal/database"
 )
 
@@ -22,9 +23,12 @@ func TestHandlerUsersCreate(t *testing.T) {
 	userID := uuid.MustParse("d6b2797e-b0ee-45e6-985f-1c9a57aba969")
 	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 123456000, time.UTC)
 	updatedAt := createdAt.Add(time.Minute)
-	const email = "user@example.com"
+	const (
+		email    = "user@example.com"
+		password = "test password"
+	)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"user@example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"user@example.com","password":"test password"}`))
 	type contextKey struct{}
 	req = req.WithContext(context.WithValue(req.Context(), contextKey{}, "request context"))
 	calls := 0
@@ -36,13 +40,20 @@ func TestHandlerUsersCreate(t *testing.T) {
 		if normalized := strings.Join(strings.Fields(strings.ToLower(query)), " "); !strings.Contains(normalized, "insert into users") {
 			t.Errorf("expected a users insert, got query %q", query)
 		}
-		if len(args) != 1 {
-			t.Fatalf("query arguments = %v, want email", args)
+		if len(args) != 2 {
+			t.Fatalf("query arguments = %v, want email and hashed password", args)
 		}
 		if args[0].Ordinal != 1 || args[0].Value != email {
 			t.Errorf("query argument = %+v, want email %q", args[0], email)
 		}
-		return &userTestRows{values: []driver.Value{userID.String(), createdAt, updatedAt, email}}, nil
+		hashedPassword, ok := args[1].Value.(string)
+		if !ok || hashedPassword == password {
+			t.Fatalf("password argument = %v, want a password hash", args[1].Value)
+		}
+		if matches, err := auth.CheckPasswordHash(password, hashedPassword); err != nil || !matches {
+			t.Errorf("stored password hash check = (%v, %v), want (true, nil)", matches, err)
+		}
+		return &userTestRows{values: []driver.Value{userID.String(), createdAt, updatedAt, email, hashedPassword}}, nil
 	})}
 	rec := httptest.NewRecorder()
 
@@ -65,6 +76,7 @@ func TestHandlerUsersRejectsInvalidInputWithoutDatabase(t *testing.T) {
 		payload string
 	}{
 		{name: "empty request"},
+		{name: "missing password", payload: `{"email":"user@example.com"}`},
 		{name: "malformed JSON", payload: `{"email":`},
 		{name: "invalid email type", payload: `{"email":42}`},
 	}
@@ -88,7 +100,7 @@ func TestHandlerUsersDatabaseError(t *testing.T) {
 		calls++
 		return nil, errors.New("database unavailable: private connection details")
 	})}
-	req := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"user@example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"user@example.com","password":"test password"}`))
 	rec := httptest.NewRecorder()
 
 	cfg.handlerUsers(rec, req)
@@ -166,7 +178,7 @@ type userTestRows struct {
 }
 
 func (*userTestRows) Columns() []string {
-	return []string{"id", "created_at", "updated_at", "email"}
+	return []string{"id", "created_at", "updated_at", "email", "hashed_password"}
 }
 
 func (*userTestRows) Close() error { return nil }
